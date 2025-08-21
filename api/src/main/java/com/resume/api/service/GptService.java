@@ -65,4 +65,23 @@ public class GptService {
             return new ResumeAnalysis();
         }
     }
+
+    /**
+     * Extract structured job requirements
+     */
+    public String extractJobRequirements(String jobDescription) {
+        ChatCompletionCreateParams params = ChatCompletionCreateParams.builder()
+                .model(ChatModel.GPT_4O_MINI) // or GPT_5
+                .addUserMessage(
+                        "Extract the following from this job description and return strictly as JSON:\n" +
+                                "{ skills: [list of required skills], min_experience: number (years), education: string }\n\n" +
+                                "Job Description:\n" + jobDescription
+                )
+                .temperature(0.0) // deterministic
+                .build();
+
+        ChatCompletion completion = client.chat().completions().create(params);
+
+        return completion.choices().get(0).message().content().get();
+    }
 }
