@@ -68,4 +68,9 @@ public class ResumeParserService {
 
         return resumeRepository.save(resume);
     }
+
+    // Implement getAllResumes method
+    public List<ResumeEntity> getAllResumes() {
+        return resumeRepository.findAll();
+    }
 }
