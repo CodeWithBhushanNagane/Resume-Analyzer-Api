@@ -2,98 +2,82 @@ package com.resume.api.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.resume.api.model.JobMatchResult;
 import com.resume.api.model.ResumeEntity;
+import com.resume.api.repository.JobMatchResultRepository;
 import com.resume.api.repository.ResumeRepository;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 
 @Service
+@RequiredArgsConstructor
 public class JobMatchService {
 
     @Autowired
     ResumeRepository resumeRepository;
     @Autowired
     GptService gptService;
+    @Autowired
+    JobMatchResultRepository jobMatchResultRepository;
     private final ObjectMapper mapper = new ObjectMapper();
 
 
-    public List<Map<String, Object>> matchJob(String jobDescription) {
+    public JobMatchResult matchAndSave(Long jobId, String jobJson, ResumeEntity resume) {
         try {
-            // 1. Extract structured job requirements from GPT
-            String jobJson = gptService.extractJobRequirements(jobDescription);
-
-            jobJson = jobJson.replaceAll("```json", "")
-                    .replaceAll("```", "")
-                    .trim();
             JsonNode jobReq = mapper.readTree(jobJson);
-            Set<String> requiredSkills = new HashSet<>();
-            jobReq.withArray("skills").forEach(s -> requiredSkills.add(s.asText().toLowerCase()));
-            int minExperience = jobReq.has("min_experience") ? jobReq.get("min_experience").asInt() : 0;
-            String requiredDegree = jobReq.has("education") ? jobReq.get("education").asText().toLowerCase() : "";
+            JsonNode analysis = mapper.readTree(resume.getAiAnalysis());
 
-            // 2. Fetch all resumes from DB
-            List<ResumeEntity> resumes = resumeRepository.findAll();
+            // 1. Skills overlap
+            Set<String> jobSkills = new HashSet<>();
+            jobReq.get("skills").forEach(s -> jobSkills.add(s.asText().toLowerCase()));
 
-            List<Map<String, Object>> results = new ArrayList<>();
+            Set<String> resumeSkills = new HashSet<>();
+            analysis.get("skills").forEach(s -> resumeSkills.add(s.asText().toLowerCase()));
 
-            for (ResumeEntity resume : resumes) {
-                if(resume.getAiAnalysis() == null || resume.getAiAnalysis().isEmpty()) {
-                    continue; // Skip resumes without AI analysis
-                }
-                JsonNode analysis = mapper.readTree(resume.getAiAnalysis());
+            Set<String> matched = new HashSet<>(resumeSkills);
+            matched.retainAll(jobSkills);
 
-                // Candidate skills
-                Set<String> candidateSkills = new HashSet<>();
-                analysis.withArray("skills").forEach(s -> candidateSkills.add(s.asText().toLowerCase()));
+            Set<String> missing = new HashSet<>(jobSkills);
+            missing.removeAll(resumeSkills);
 
-                // Skill matching
-                Set<String> matched = new HashSet<>(candidateSkills);
-                matched.retainAll(requiredSkills);
-                Set<String> missing = new HashSet<>(requiredSkills);
-                missing.removeAll(candidateSkills);
+            int skillScore = (int) (((double) matched.size() / jobSkills.size()) * 70); // 70% weight
 
-                double skillMatchPercent = requiredSkills.isEmpty() ? 100 :
-                        ((double) matched.size() / requiredSkills.size()) * 100;
+            // 2. Experience
+            int requiredYears = jobReq.get("minYears").asInt(0);
+            int resumeYears = analysis.get("experience").get(0).get("years").asInt(0);
+            int expScore = resumeYears >= requiredYears ? 20 : 10; // 20 if meets, else partial
 
-                // Experience
-                int years = 0;
-                if (analysis.has("experience") && analysis.withArray("experience").size() > 0) {
-                    years = analysis.withArray("experience").get(0).has("years")
-                            ? analysis.withArray("experience").get(0).get("years").asInt()
-                            : 0;
-                }
-                boolean experienceOk = years >= minExperience;
+            // 3. Education (simple check)
+            String requiredDegree = jobReq.has("degree") ? jobReq.get("degree").asText().toLowerCase() : "";
+            boolean hasDegree = analysis.get("education").toString().toLowerCase().contains(requiredDegree);
+            int eduScore = hasDegree ? 10 : 0;
 
-                // Education
-                boolean educationOk = analysis.withArray("education")
-                        .toString().toLowerCase().contains(requiredDegree);
+            int totalScore = skillScore + expScore + eduScore;
 
-                // Build result
-                Map<String, Object> candidateResult = new HashMap<>();
-                candidateResult.put("candidate", analysis.has("name") ? analysis.get("name").asText() : "Unknown");
-                candidateResult.put("matchPercent", Math.round(skillMatchPercent));
-                candidateResult.put("matchedSkills", matched);
-                candidateResult.put("missingSkills", missing);
-                candidateResult.put("experienceOk", experienceOk);
-                candidateResult.put("educationOk", educationOk);
+            // 4. GPT summary
+            String summary = gptService.analyzeText(
+                    "Given resume: " + analysis.toPrettyString() +
+                            "\nAnd job: " + jobReq.toPrettyString() +
+                            "\nProvide a short JSON: { \"summary\": \"\", \"whyMatch\": \"\" }"
+            );
 
-                results.add(candidateResult);
-            }
+            // Save
+            JobMatchResult result = JobMatchResult.builder()
+                    .jobId(jobId)
+                    .resumeId(resume.getId())
+                    .score(totalScore)
+                    .missingSkills(mapper.writeValueAsString(missing))
+                    .summary(summary)
+                    .aiGenerated(true)
+                    .build();
 
-            // 3. Sort by match percent
-            results.sort((a, b) -> {
-                Number n1 = (Number) b.get("matchPercent");
-                Number n2 = (Number) a.get("matchPercent");
-                return Integer.compare(n1.intValue(), n2.intValue());
-            });
-//            results.sort((a, b) -> ((Integer)b.get("matchPercent")).compareTo((Integer)a.get("matchPercent")));
-
-            return results;
+            return jobMatchResultRepository.save(result);
 
         } catch (Exception e) {
-            throw new RuntimeException("Error during job matching: " + e.getMessage(), e);
+            throw new RuntimeException("Error during job matching", e);
         }
     }
 }

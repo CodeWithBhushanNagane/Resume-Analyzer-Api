@@ -84,4 +84,16 @@ public class GptService {
 
         return completion.choices().get(0).message().content().get();
     }
+
+    public String analyzeText(String resumeText) {
+        ChatCompletionCreateParams params = ChatCompletionCreateParams.builder()
+                .model(ChatModel.GPT_4O_MINI) // or GPT_5 if available
+                .addUserMessage("Analyze this resume and return JSON with {name, email, phone, skills[], experience[], education[]}. Resume text:\n\n" + resumeText)
+                .temperature(0.2)
+                .build();
+
+        ChatCompletion completion = client.chat().completions().create(params);
+
+        return completion.choices().get(0).message().content().get();
+    }
 }
